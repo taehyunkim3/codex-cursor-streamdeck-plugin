@@ -14,11 +14,13 @@ const DEFAULT_DECK_COLUMNS = 3;
 const DEFAULT_VISIBLE_SLOTS = 6;
 const DEFAULT_FONT_SCALE = 100;
 const DEFAULT_PROJECT_FONT_SIZE = 15;
-const DEFAULT_TITLE_FONT_SIZE = 20;
+const DEFAULT_TITLE_FONT_SIZE = 22;
 const DEFAULT_ACTIVE_MESSAGE_FONT_SIZE = 18;
 const DEFAULT_FOOTER_MESSAGE_FONT_SIZE = 12;
+const DEFAULT_LABEL_FONT_SIZE = 11;
 const MAX_THREADS = 50;
 const OPEN_COMMAND = "/usr/bin/open";
+const CURSOR_BUNDLE_ID = "com.todesktop.230313mzl4w4u92";
 
 const actions = new Map();
 const snapshotCache = new Map();
@@ -46,7 +48,7 @@ function parseArgs(argv) {
 }
 
 function expandHome(value) {
-  if (!value || value === "~/.codex") {
+  if (!value) {
     return path.join(os.homedir(), ".codex");
   }
   if (value === "~") {
@@ -58,14 +60,22 @@ function expandHome(value) {
   return value;
 }
 
-function sqliteJson(dbPath, sql) {
+function defaultCursorDbPath() {
+  return path.join(os.homedir(), "Library", "Application Support", "Cursor", "User", "globalStorage", "state.vscdb");
+}
+
+function sqlString(value) {
+  return String(value).replace(/'/g, "''");
+}
+
+function sqliteJson(dbPath, sql, timeout = 5000) {
   return new Promise((resolve) => {
     if (!fs.existsSync(dbPath)) {
       resolve([]);
       return;
     }
 
-    execFile("sqlite3", ["-json", dbPath, sql], { timeout: 2000, maxBuffer: 1024 * 1024 * 4 }, (error, stdout) => {
+    execFile("sqlite3", ["-json", dbPath, sql], { timeout, maxBuffer: 1024 * 1024 * 4 }, (error, stdout) => {
       if (error || !stdout.trim()) {
         resolve([]);
         return;
@@ -109,6 +119,14 @@ function readSessionIndex(codexHome, showArchived) {
 }
 
 async function readSnapshot(settings = {}) {
+  const provider = settings.provider === "cursor" ? "cursor" : "codex";
+  if (provider === "cursor") {
+    return readCursorSnapshot(settings);
+  }
+  return readCodexSnapshot(settings);
+}
+
+async function readCodexSnapshot(settings = {}) {
   const codexHome = expandHome(settings.codexHome);
   const showArchived = Boolean(settings.showArchived);
   const recentMinutes = Number(settings.recentMinutes) || DEFAULT_RECENT_MINUTES;
@@ -177,6 +195,7 @@ async function readSnapshot(settings = {}) {
         : "idle";
 
     return {
+      provider: "codex",
       id: thread.id,
       title: truncateText(thread.title || thread.preview || "Untitled", 120),
       cwd: cleanText(thread.cwd || ""),
@@ -191,6 +210,95 @@ async function readSnapshot(settings = {}) {
       tokensUsed: Number(thread.tokens_used) || 0
     };
   }));
+
+  snapshotCache.set(cacheKey, { createdAt: now, snapshot });
+  return snapshot;
+}
+
+async function readCursorSnapshot(settings = {}) {
+  const cursorDb = settings.cursorDbPath ? expandHome(settings.cursorDbPath) : defaultCursorDbPath();
+  const showArchived = Boolean(settings.showArchived);
+  const recentMinutes = Number(settings.recentMinutes) || DEFAULT_RECENT_MINUTES;
+  const cacheKey = `cursor:${cursorDb}:${showArchived}:${recentMinutes}`;
+  const cached = snapshotCache.get(cacheKey);
+  const now = Date.now();
+
+  if (cached && now - cached.createdAt < 1500) {
+    return cached.snapshot;
+  }
+
+  const [headersRows, projectsRows, membershipRows] = await Promise.all([
+    sqliteJson(
+      cursorDb,
+      `with raw as (
+         select value from ItemTable where key = 'composer.composerHeaders'
+       )
+       select json_extract(j.value, '$.composerId') as composerId,
+              json_extract(j.value, '$.unifiedMode') as unifiedMode,
+              json_extract(j.value, '$.forceMode') as forceMode,
+              json_extract(j.value, '$.createdAt') as createdAt,
+              json_extract(j.value, '$.lastUpdatedAt') as lastUpdatedAt,
+              json_extract(j.value, '$.recency') as recency,
+              json_extract(j.value, '$.isArchived') as isArchived,
+              json_extract(j.value, '$.isDraft') as isDraft,
+              json_extract(j.value, '$.name') as name,
+              json_extract(j.value, '$.workspaceIdentifier.id') as workspaceId
+         from raw, json_each(raw.value, '$.allComposers') j
+        where json_extract(j.value, '$.type') = 'head'
+        order by coalesce(
+          json_extract(j.value, '$.lastUpdatedAt'),
+          json_extract(j.value, '$.recency'),
+          json_extract(j.value, '$.createdAt')
+        ) desc
+        limit ${MAX_THREADS}`,
+      5000
+    ),
+    sqliteJson(cursorDb, "select value from ItemTable where key='glass.localAgentProjects.v1'"),
+    sqliteJson(cursorDb, "select value from ItemTable where key='glass.localAgentProjectMembership.v1'")
+  ]);
+
+  const headers = parseCursorHeaders(headersRows);
+  const projects = parseCursorProjects(projectsRows[0] && projectsRows[0].value);
+  const membership = parseCursorMembership(membershipRows[0] && membershipRows[0].value);
+  const source = headers
+    .filter((header) => !header.isArchived || showArchived)
+    .filter((header) => header.unifiedMode === "agent")
+    .sort((a, b) => cursorHeaderTime(b) - cursorHeaderTime(a))
+    .slice(0, MAX_THREADS);
+
+  const snapshotRows = await Promise.all(source.map(async (header) => {
+    const data = await readCursorComposerData(cursorDb, header.composerId);
+    const project = cursorProjectForHeader(header, projects, membership);
+    const updatedAtMs = Math.max(cursorHeaderTime(header), data.updatedAtMs || 0);
+    const ageMs = now - updatedAtMs;
+    const status = data.status && !["none", "completed", "complete", "idle"].includes(String(data.status).toLowerCase())
+      ? "active"
+      : ageMs <= recentMinutes * 60_000
+        ? "recent"
+        : "idle";
+    const title = data.title || header.name || project.name || "Cursor Agent";
+    const hasVisibleContent = Boolean(data.title || data.latestMessage || project.path || project.name !== "Cursor");
+    if (!hasVisibleContent && status !== "active") {
+      return null;
+    }
+
+    return {
+      provider: "cursor",
+      id: header.composerId,
+      title: truncateText(title, 120),
+      cwd: project.path || project.name || "Cursor",
+      latestMessage: data.latestMessage,
+      taskOpen: status === "active",
+      updatedAtMs,
+      lastLogMs: updatedAtMs,
+      lastActivityMs: updatedAtMs,
+      ageMs,
+      status,
+      archived: Boolean(header.isArchived),
+      tokensUsed: 0
+    };
+  }));
+  const snapshot = snapshotRows.filter(Boolean);
 
   snapshotCache.set(cacheKey, { createdAt: now, snapshot });
   return snapshot;
@@ -373,6 +481,166 @@ function readTaskState(rolloutPath) {
   return state;
 }
 
+function parseJsonValue(value, fallback) {
+  try {
+    return JSON.parse(String(value || ""));
+  } catch {
+    return fallback;
+  }
+}
+
+function parseCursorHeaders(value) {
+  if (Array.isArray(value)) {
+    return value.filter((entry) => entry && entry.composerId).map((entry) => ({
+      ...entry,
+      isArchived: Boolean(entry.isArchived),
+      workspaceIdentifier: { id: entry.workspaceId }
+    }));
+  }
+
+  const data = parseJsonValue(value, {});
+  return Array.isArray(data.allComposers)
+    ? data.allComposers.filter((entry) => entry && entry.type === "head" && entry.composerId)
+    : [];
+}
+
+function parseCursorProjects(value) {
+  const projects = new Map();
+  const data = parseJsonValue(value, []);
+  if (!Array.isArray(data)) {
+    return projects;
+  }
+
+  for (const project of data) {
+    const workspace = project.workspace || {};
+    const workspaceId = workspace.id;
+    if (!workspaceId) {
+      continue;
+    }
+    const fsPath = workspace.uri && workspace.uri.fsPath
+      ? workspace.uri.fsPath
+      : workspace.configPath && workspace.configPath.fsPath
+        ? workspace.configPath.fsPath
+        : "";
+    projects.set(workspaceId, {
+      id: project.id,
+      name: cleanText(project.name || ""),
+      path: cleanText(fsPath)
+    });
+  }
+
+  return projects;
+}
+
+function parseCursorMembership(value) {
+  const membership = new Map();
+  const data = parseJsonValue(value, {});
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return membership;
+  }
+  for (const [composerId, projectId] of Object.entries(data)) {
+    membership.set(composerId, projectId);
+  }
+  return membership;
+}
+
+function cursorHeaderTime(header) {
+  return Number(header.lastUpdatedAt || header.recency || header.createdAt) || 0;
+}
+
+function cursorProjectForHeader(header, projects, membership) {
+  const workspaceId = header.workspaceIdentifier && header.workspaceIdentifier.id;
+  const directProject = workspaceId ? projects.get(workspaceId) : undefined;
+  if (directProject) {
+    return directProject;
+  }
+
+  const projectId = membership.get(header.composerId);
+  if (projectId) {
+    for (const project of projects.values()) {
+      if (project.id === projectId) {
+        return project;
+      }
+    }
+  }
+
+  return {
+    id: "",
+    name: "Cursor",
+    path: ""
+  };
+}
+
+async function readCursorComposerData(cursorDb, composerId) {
+  const rows = await sqliteJson(
+    cursorDb,
+    `select length(value) as size,
+            case when length(value) <= 1000000 then value else substr(value, 1, 250000) end as value
+       from cursorDiskKV
+      where key = 'composerData:${sqlString(composerId)}'`
+  );
+  const row = rows[0] || {};
+  const data = parseJsonValue(row.value, {});
+  const latestMessage = latestCursorMessage(data);
+  return {
+    status: data.status || "",
+    title: cursorTitle(data, latestMessage),
+    latestMessage,
+    updatedAtMs: Number(data.lastUpdatedAt || data.updatedAt || data.recency || 0) || 0
+  };
+}
+
+function cursorTitle(data, latestMessage) {
+  const title = cleanText(data.name || data.title || data.conversationTitle || data.text || "");
+  if (title) {
+    return title;
+  }
+  return truncateText(latestMessage, 80);
+}
+
+function latestCursorMessage(data) {
+  const messages = [];
+  collectCursorMessages(data.conversation, messages);
+  collectCursorMessages(data.conversationMap, messages);
+  collectCursorMessages(data.fullConversationHeadersOnly, messages);
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const text = normalizeConversationText(messages[index]);
+    if (text && !isInternalConversationText(text)) {
+      return text;
+    }
+  }
+  return "";
+}
+
+function collectCursorMessages(value, output) {
+  if (!value) {
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry) => collectCursorMessages(entry, output));
+    return;
+  }
+  if (typeof value !== "object") {
+    return;
+  }
+
+  for (const key of ["text", "content", "message", "summary", "name", "title"]) {
+    if (typeof value[key] === "string") {
+      const text = cleanText(value[key]);
+      if (text && text.length > 1) {
+        output.push(text);
+      }
+    }
+  }
+
+  for (const key of ["bubble", "data", "header"]) {
+    if (value[key] && typeof value[key] === "object") {
+      collectCursorMessages(value[key], output);
+    }
+  }
+}
+
 function contextSlot(context, entry) {
   const explicit = Number(entry.settings.slot);
   if (Number.isInteger(explicit) && explicit > 0) {
@@ -497,7 +765,8 @@ function fontSettings(settings = {}) {
     project: Math.round(clampNumber(settings.projectFontSize, DEFAULT_PROJECT_FONT_SIZE, 8, 28) * scale),
     title: Math.round(clampNumber(settings.titleFontSize, DEFAULT_TITLE_FONT_SIZE, 8, 32) * scale),
     activeMessage: Math.round(clampNumber(settings.activeMessageFontSize, DEFAULT_ACTIVE_MESSAGE_FONT_SIZE, 8, 32) * scale),
-    footerMessage: Math.round(clampNumber(settings.footerMessageFontSize, DEFAULT_FOOTER_MESSAGE_FONT_SIZE, 7, 24) * scale)
+    footerMessage: Math.round(clampNumber(settings.footerMessageFontSize, DEFAULT_FOOTER_MESSAGE_FONT_SIZE, 7, 24) * scale),
+    label: Math.round(clampNumber(settings.bottomLabelFontSize, DEFAULT_LABEL_FONT_SIZE, 7, 24) * scale)
   };
 }
 
@@ -535,10 +804,15 @@ function renderThreadImage(thread, settings = {}) {
   const fonts = fontSettings(settings);
   const project = fitLines(thread ? basename(thread.cwd) || "Codex" : "Codex", 1, fitUnits(7.8, DEFAULT_PROJECT_FONT_SIZE, fonts.project))[0];
   const latestMessage = thread && thread.latestMessage ? thread.latestMessage : "";
+  const bottomLabel = cleanText(settings.bottomLabel || "");
+  const hasBottomLabel = bottomLabel.length > 0;
   const titleLines = isActive ? [] : fitLines(thread ? thread.title : "No session", 2, fitUnits(7.7, DEFAULT_TITLE_FONT_SIZE, fonts.title));
+  const messageMaxLines = isActive
+    ? hasBottomLabel ? 3 : 4
+    : hasBottomLabel ? 1 : 2;
   const messageLines = fitLines(
     latestMessage || (isActive ? thread.title : ""),
-    isActive ? 4 : 2,
+    messageMaxLines,
     isActive
       ? fitUnits(7.9, DEFAULT_ACTIVE_MESSAGE_FONT_SIZE, fonts.activeMessage)
       : fitUnits(10.2, DEFAULT_FOOTER_MESSAGE_FONT_SIZE, fonts.footerMessage)
@@ -547,18 +821,24 @@ function renderThreadImage(thread, settings = {}) {
   const titleLineHeight = Math.round(fonts.title * 1.1);
   const activeLineHeight = Math.round(fonts.activeMessage * 1.12);
   const footerLineHeight = Math.round(fonts.footerMessage * 1.25);
+  const labelLine = hasBottomLabel
+    ? fitLines(bottomLabel, 1, fitUnits(12, DEFAULT_LABEL_FONT_SIZE, fonts.label))[0]
+    : "";
 
   const titleSvg = titleLines.map((line, index) => (
     `<text x="10" y="${56 + index * titleLineHeight}" fill="${colors.text}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="${fonts.title}" font-weight="800">${escapeXml(line)}</text>`
   )).join("");
 
-  const messageStartY = isActive ? 54 : 111;
+  const messageStartY = isActive ? 54 : hasBottomLabel ? 107 : 111;
   const messageSize = isActive ? fonts.activeMessage : fonts.footerMessage;
   const messageWeight = isActive ? 800 : 700;
   const messageFill = isActive ? colors.text : colors.muted;
   const messageSvg = messageLines.map((line, index) => (
     `<text x="10" y="${messageStartY + index * (isActive ? activeLineHeight : footerLineHeight)}" fill="${messageFill}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="${messageSize}" font-weight="${messageWeight}">${escapeXml(line)}</text>`
   )).join("");
+  const labelSvg = hasBottomLabel
+    ? `<text x="10" y="135" fill="${colors.accent}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="${fonts.label}" font-weight="900">${escapeXml(labelLine)}</text>`
+    : "";
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
   <rect width="144" height="144" rx="18" fill="${colors.background}"/>
@@ -566,6 +846,7 @@ function renderThreadImage(thread, settings = {}) {
   <text x="34" y="24" fill="${colors.muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="${fonts.project}" font-weight="900">${escapeXml(project)}</text>
   ${titleSvg}
   ${messageSvg}
+  ${labelSvg}
 </svg>`;
 
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
@@ -578,10 +859,21 @@ function send(message) {
   websocket.send(JSON.stringify(message));
 }
 
-function openThreadInCodex(thread) {
+function openThread(thread) {
   return new Promise((resolve, reject) => {
     if (!thread || !thread.id) {
-      reject(new Error("No Codex session is available for this key."));
+      reject(new Error("No session is available for this key."));
+      return;
+    }
+
+    if (thread.provider === "cursor") {
+      execFile(OPEN_COMMAND, ["-b", CURSOR_BUNDLE_ID], { timeout: 5000 }, (error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
       return;
     }
 
@@ -674,7 +966,7 @@ function handleMessage(raw) {
     readSnapshot(entry.settings).then((snapshot) => {
       const slot = contextSlot(message.context, entry);
       const thread = snapshot[slot - 1];
-      return openThreadInCodex(thread).then(() => updateAction(message.context, entry));
+      return openThread(thread).then(() => updateAction(message.context, entry));
     }).then(() => {
       send({ event: "showOk", context: message.context });
     }).catch(() => {
@@ -710,9 +1002,15 @@ function connectToStreamDeck(args) {
 }
 
 async function preview() {
-  const snapshot = await readSnapshot({});
+  const settings = {
+    provider: args.provider,
+    bottomLabel: args.bottomLabel,
+    slot: Number(args.slot) || undefined
+  };
+  const snapshot = await readSnapshot(settings);
   console.log(JSON.stringify(snapshot.slice(0, DEFAULT_VISIBLE_SLOTS).map((thread, index) => ({
     slot: index + 1,
+    provider: thread.provider,
     status: statusLabel(thread.status),
     title: thread.title,
     latestMessage: thread.latestMessage,

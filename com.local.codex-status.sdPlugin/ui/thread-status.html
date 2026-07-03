@@ -28,7 +28,8 @@
       color: #cbd5e1;
     }
 
-    input {
+    input,
+    select {
       box-sizing: border-box;
       width: 100%;
       border: 1px solid #4b5563;
@@ -58,6 +59,14 @@
 </head>
 <body>
   <label>
+    <span>Provider</span>
+    <select id="provider">
+      <option value="codex">Codex</option>
+      <option value="cursor">Cursor Agent</option>
+    </select>
+  </label>
+
+  <label>
     <span>Session slot</span>
     <input id="slot" type="number" min="1" max="99" step="1" placeholder="1">
   </label>
@@ -70,6 +79,11 @@
   <label>
     <span>Codex home</span>
     <input id="codexHome" type="text" placeholder="~/.codex">
+  </label>
+
+  <label>
+    <span>Cursor DB path</span>
+    <input id="cursorDbPath" type="text" placeholder="~/Library/Application Support/Cursor/User/globalStorage/state.vscdb">
   </label>
 
   <label>
@@ -89,7 +103,7 @@
 
   <label>
     <span>Title font size</span>
-    <input id="titleFontSize" type="number" min="8" max="32" step="1" placeholder="20">
+    <input id="titleFontSize" type="number" min="8" max="32" step="1" placeholder="22">
   </label>
 
   <label>
@@ -100,6 +114,16 @@
   <label>
     <span>Bottom message font size</span>
     <input id="footerMessageFontSize" type="number" min="7" max="24" step="1" placeholder="12">
+  </label>
+
+  <label>
+    <span>Bottom label</span>
+    <input id="bottomLabel" type="text" placeholder="CODEX or CURSOR">
+  </label>
+
+  <label>
+    <span>Bottom label font size</span>
+    <input id="bottomLabelFontSize" type="number" min="7" max="24" step="1" placeholder="11">
   </label>
 
   <label class="row">
@@ -113,15 +137,19 @@
     let settings = {};
 
     const inputs = {
+      provider: document.getElementById("provider"),
       slot: document.getElementById("slot"),
       deckColumns: document.getElementById("deckColumns"),
       codexHome: document.getElementById("codexHome"),
+      cursorDbPath: document.getElementById("cursorDbPath"),
       recentMinutes: document.getElementById("recentMinutes"),
       fontScale: document.getElementById("fontScale"),
       projectFontSize: document.getElementById("projectFontSize"),
       titleFontSize: document.getElementById("titleFontSize"),
       activeMessageFontSize: document.getElementById("activeMessageFontSize"),
       footerMessageFontSize: document.getElementById("footerMessageFontSize"),
+      bottomLabel: document.getElementById("bottomLabel"),
+      bottomLabelFontSize: document.getElementById("bottomLabelFontSize"),
       showArchived: document.getElementById("showArchived")
     };
 
@@ -145,29 +173,37 @@
     }
 
     function render() {
+      inputs.provider.value = settings.provider || "codex";
       inputs.slot.value = settings.slot || "";
       inputs.deckColumns.value = settings.deckColumns || "";
       inputs.codexHome.value = settings.codexHome || "";
+      inputs.cursorDbPath.value = settings.cursorDbPath || "";
       inputs.recentMinutes.value = settings.recentMinutes || "";
       inputs.fontScale.value = settings.fontScale || "";
       inputs.projectFontSize.value = settings.projectFontSize || "";
       inputs.titleFontSize.value = settings.titleFontSize || "";
       inputs.activeMessageFontSize.value = settings.activeMessageFontSize || "";
       inputs.footerMessageFontSize.value = settings.footerMessageFontSize || "";
+      inputs.bottomLabel.value = settings.bottomLabel || "";
+      inputs.bottomLabelFontSize.value = settings.bottomLabelFontSize || "";
       inputs.showArchived.checked = Boolean(settings.showArchived);
     }
 
     function save() {
       settings = {
+        provider: inputs.provider.value === "cursor" ? "cursor" : "codex",
         slot: Number(inputs.slot.value) || undefined,
         deckColumns: Number(inputs.deckColumns.value) || undefined,
         codexHome: inputs.codexHome.value.trim() || undefined,
+        cursorDbPath: inputs.cursorDbPath.value.trim() || undefined,
         recentMinutes: Number(inputs.recentMinutes.value) || undefined,
         fontScale: Number(inputs.fontScale.value) || undefined,
         projectFontSize: Number(inputs.projectFontSize.value) || undefined,
         titleFontSize: Number(inputs.titleFontSize.value) || undefined,
         activeMessageFontSize: Number(inputs.activeMessageFontSize.value) || undefined,
         footerMessageFontSize: Number(inputs.footerMessageFontSize.value) || undefined,
+        bottomLabel: inputs.bottomLabel.value.trim() || undefined,
+        bottomLabelFontSize: Number(inputs.bottomLabelFontSize.value) || undefined,
         showArchived: inputs.showArchived.checked || undefined
       };
 

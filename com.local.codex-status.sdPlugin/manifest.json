@@ -3,7 +3,7 @@
   "Actions": [
     {
       "Icon": "imgs/action",
-      "Name": "Codex Session",
+      "Name": "Agent Session",
       "PropertyInspectorPath": "ui/thread-status.html",
       "States": [
         {
@@ -11,18 +11,18 @@
           "ShowTitle": false
         }
       ],
-      "Tooltip": "Show a Codex session status on this key.",
+      "Tooltip": "Show a Codex or Cursor agent session status on this key.",
       "UUID": "com.local.codex-status.session",
       "UserTitleEnabled": false
     }
   ],
   "Author": "Local",
-  "Category": "Codex",
+  "Category": "Agents",
   "CategoryIcon": "imgs/action",
   "CodePath": "bin/plugin.js",
-  "Description": "Shows local Codex session activity on Stream Deck keys.",
+  "Description": "Shows local Codex and Cursor agent activity on Stream Deck keys.",
   "Icon": "imgs/plugin",
-  "Name": "Codex Status",
+  "Name": "Agent Status",
   "Nodejs": {
     "Version": "24"
   },
