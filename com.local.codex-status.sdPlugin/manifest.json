@@ -14,6 +14,19 @@
       "Tooltip": "Show a Codex or Cursor agent session status on this key.",
       "UUID": "com.local.codex-status.session",
       "UserTitleEnabled": false
+    },
+    {
+      "Icon": "imgs/action",
+      "Name": "Codex Tokens",
+      "States": [
+        {
+          "Image": "imgs/key-default",
+          "ShowTitle": false
+        }
+      ],
+      "Tooltip": "Show Codex token and rate-limit remaining status.",
+      "UUID": "com.local.codex-status.tokens",
+      "UserTitleEnabled": false
     }
   ],
   "Author": "Local",

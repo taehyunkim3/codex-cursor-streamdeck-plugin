@@ -7,6 +7,8 @@ const path = require("node:path");
 const { execFile } = require("node:child_process");
 
 const PLUGIN_UUID = "com.local.codex-status";
+const SESSION_ACTION_UUID = "com.local.codex-status.session";
+const TOKENS_ACTION_UUID = "com.local.codex-status.tokens";
 const UPDATE_MS = 700;
 const LOG_ACTIVE_MS = 75_000;
 const DEFAULT_RECENT_MINUTES = 10;
@@ -211,6 +213,51 @@ async function readCodexSnapshot(settings = {}) {
     };
   }));
 
+  snapshotCache.set(cacheKey, { createdAt: now, snapshot });
+  return snapshot;
+}
+
+async function readTokenSnapshot(settings = {}) {
+  const codexHome = expandHome(settings.codexHome);
+  const cacheKey = `tokens:${codexHome}`;
+  const cached = snapshotCache.get(cacheKey);
+  const now = Date.now();
+
+  if (cached && now - cached.createdAt < 1500) {
+    return cached.snapshot;
+  }
+
+  const stateDb = path.join(codexHome, "state_5.sqlite");
+  const rows = await sqliteJson(
+    stateDb,
+    `select id, rollout_path, recency_at_ms
+       from threads
+      where archived = 0
+        and coalesce(thread_source, '') != 'subagent'
+      order by recency_at_ms desc
+      limit 20`
+  );
+
+  let latest = null;
+  for (const row of rows) {
+    const tokenEvent = readLatestTokenCount(row.rollout_path);
+    if (!tokenEvent) {
+      continue;
+    }
+    if (!latest || tokenEvent.timestampMs > latest.timestampMs) {
+      latest = {
+        ...tokenEvent,
+        threadId: row.id,
+        recencyAtMs: Number(row.recency_at_ms) || 0
+      };
+    }
+  }
+
+  const snapshot = latest || {
+    timestampMs: 0,
+    info: {},
+    rateLimits: {}
+  };
   snapshotCache.set(cacheKey, { createdAt: now, snapshot });
   return snapshot;
 }
@@ -432,6 +479,36 @@ function readLatestConversationText(rolloutPath) {
   }
 
   return "";
+}
+
+function readLatestTokenCount(rolloutPath) {
+  if (!rolloutPath) {
+    return null;
+  }
+
+  const lines = readTail(rolloutPath).split("\n").reverse();
+  for (const line of lines) {
+    if (!line.includes("\"type\":\"event_msg\"") || !line.includes("\"token_count\"")) {
+      continue;
+    }
+
+    try {
+      const event = JSON.parse(line);
+      const payload = event.payload || {};
+      if (payload.type !== "token_count") {
+        continue;
+      }
+      return {
+        timestampMs: Date.parse(event.timestamp || "") || 0,
+        info: payload.info || {},
+        rateLimits: payload.rate_limits || {}
+      };
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
 }
 
 function readTaskState(rolloutPath) {
@@ -699,6 +776,47 @@ function formatAge(ageMs) {
   return `${Math.floor(hours / 24)}d`;
 }
 
+function formatCompactNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) {
+    return "0";
+  }
+  if (number >= 1_000_000) {
+    return `${(number / 1_000_000).toFixed(number >= 10_000_000 ? 0 : 1)}m`;
+  }
+  if (number >= 1_000) {
+    return `${(number / 1_000).toFixed(number >= 10_000 ? 0 : 1)}k`;
+  }
+  return String(Math.round(number));
+}
+
+function remainingPercent(limit) {
+  const used = Number(limit && limit.used_percent);
+  if (!Number.isFinite(used)) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, 100 - used));
+}
+
+function formatPercent(value) {
+  if (!Number.isFinite(value)) {
+    return "--";
+  }
+  return `${Math.round(value)}%`;
+}
+
+function formatResetTime(limit, now = Date.now()) {
+  const resetsAt = Number(limit && limit.resets_at);
+  if (!Number.isFinite(resetsAt) || resetsAt <= 0) {
+    return "";
+  }
+  const ms = resetsAt * 1000 - now;
+  if (ms <= 0) {
+    return "reset now";
+  }
+  return `reset ${formatAge(ms)}`;
+}
+
 function basename(value) {
   if (!value) {
     return "";
@@ -852,6 +970,40 @@ function renderThreadImage(thread, settings = {}) {
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
 }
 
+function renderTokenImage(snapshot) {
+  const primary = snapshot.rateLimits && snapshot.rateLimits.primary ? snapshot.rateLimits.primary : {};
+  const secondary = snapshot.rateLimits && snapshot.rateLimits.secondary ? snapshot.rateLimits.secondary : {};
+  const primaryLeft = remainingPercent(primary);
+  const secondaryLeft = remainingPercent(secondary);
+  const lastUsage = snapshot.info && snapshot.info.last_token_usage ? snapshot.info.last_token_usage : {};
+  const totalUsage = snapshot.info && snapshot.info.total_token_usage ? snapshot.info.total_token_usage : {};
+  const lastTokens = Number(lastUsage.total_tokens) || 0;
+  const totalTokens = Number(totalUsage.total_tokens) || 0;
+  const updated = snapshot.timestampMs ? formatAge(Date.now() - snapshot.timestampMs) : "no data";
+  const primaryReset = formatResetTime(primary);
+  const secondaryReset = formatResetTime(secondary);
+  const hasData = snapshot.timestampMs > 0;
+  const accent = hasData ? "#38bdf8" : "#64748b";
+  const background = "#08111f";
+  const text = "#f8fafc";
+  const muted = "#bae6fd";
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
+  <rect width="144" height="144" rx="18" fill="${background}"/>
+  <circle cx="18" cy="18" r="7" fill="none" stroke="${accent}" stroke-width="3"/>
+  <text x="34" y="24" fill="${muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="900">Codex</text>
+  <text x="10" y="51" fill="${text}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="21" font-weight="900">Tokens</text>
+  <text x="10" y="76" fill="${text}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17" font-weight="800">5h ${escapeXml(formatPercent(primaryLeft))}</text>
+  <text x="83" y="76" fill="${muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" font-weight="700">${escapeXml(primaryReset)}</text>
+  <text x="10" y="98" fill="${text}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17" font-weight="800">7d ${escapeXml(formatPercent(secondaryLeft))}</text>
+  <text x="83" y="98" fill="${muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" font-weight="700">${escapeXml(secondaryReset)}</text>
+  <text x="10" y="119" fill="${muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="800">last ${escapeXml(formatCompactNumber(lastTokens))} / total ${escapeXml(formatCompactNumber(totalTokens))}</text>
+  <text x="10" y="136" fill="${accent}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="900">${escapeXml(updated)} ago</text>
+</svg>`;
+
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+}
+
 function send(message) {
   if (!websocket || websocket.readyState !== WebSocket.OPEN) {
     return;
@@ -896,6 +1048,29 @@ function openThread(thread) {
 }
 
 async function updateAction(context, entry) {
+  if (entry.action === TOKENS_ACTION_UUID) {
+    const snapshot = await readTokenSnapshot(entry.settings);
+    const image = renderTokenImage(snapshot);
+
+    send({
+      event: "setTitle",
+      context,
+      payload: {
+        title: "",
+        target: 0
+      }
+    });
+    send({
+      event: "setImage",
+      context,
+      payload: {
+        image,
+        target: 0
+      }
+    });
+    return;
+  }
+
   const slot = contextSlot(context, entry);
   const snapshot = await readSnapshot(entry.settings);
   const thread = snapshot[slot - 1];
@@ -942,6 +1117,7 @@ function handleMessage(raw) {
 
   if (message.event === "willAppear") {
     actions.set(message.context, {
+      action: message.action || SESSION_ACTION_UUID,
       settings: message.payload && message.payload.settings ? message.payload.settings : {},
       coordinates: message.payload && message.payload.coordinates ? message.payload.coordinates : undefined
     });
@@ -962,6 +1138,10 @@ function handleMessage(raw) {
 
   if (message.event === "keyDown" && actions.has(message.context)) {
     const entry = actions.get(message.context);
+    if (entry.action === TOKENS_ACTION_UUID) {
+      updateAction(message.context, entry).catch(() => {});
+      return;
+    }
     snapshotCache.clear();
     readSnapshot(entry.settings).then((snapshot) => {
       const slot = contextSlot(message.context, entry);
@@ -1002,6 +1182,22 @@ function connectToStreamDeck(args) {
 }
 
 async function preview() {
+  if (args.tokens) {
+    const snapshot = await readTokenSnapshot({});
+    const primary = snapshot.rateLimits && snapshot.rateLimits.primary ? snapshot.rateLimits.primary : {};
+    const secondary = snapshot.rateLimits && snapshot.rateLimits.secondary ? snapshot.rateLimits.secondary : {};
+    console.log(JSON.stringify({
+      primaryRemaining: formatPercent(remainingPercent(primary)),
+      primaryReset: formatResetTime(primary),
+      secondaryRemaining: formatPercent(remainingPercent(secondary)),
+      secondaryReset: formatResetTime(secondary),
+      lastTokens: snapshot.info && snapshot.info.last_token_usage ? snapshot.info.last_token_usage.total_tokens : 0,
+      totalTokens: snapshot.info && snapshot.info.total_token_usage ? snapshot.info.total_token_usage.total_tokens : 0,
+      updatedAt: snapshot.timestampMs ? new Date(snapshot.timestampMs).toISOString() : null
+    }, null, 2));
+    return;
+  }
+
   const settings = {
     provider: args.provider,
     bottomLabel: args.bottomLabel,

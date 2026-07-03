@@ -5,6 +5,8 @@ Stream Deck plugin prototype that displays recent local Codex and Cursor agent s
 ## What It Shows
 
 - One Stream Deck action instance maps to one session rank for the selected provider.
+- `Agent Session` shows individual Codex or Cursor agent sessions.
+- `Codex Tokens` is a separate key action for Codex token/rate-limit status only.
 - Each key can use `Provider = Codex` or `Provider = Cursor Agent`.
 - Add as many keys as your Stream Deck model has, then choose the provider per key.
 - Provider split is not fixed. You can use any mix, such as all Codex, all Cursor, 3 + 3, 6 + 9, or one page per provider.
@@ -27,6 +29,11 @@ Stream Deck plugin prototype that displays recent local Codex and Cursor agent s
   - bottom conversation text
 - Optional bottom labels can be added per key, with a separate label font size. This is useful for labels like `CODEX` or `CURSOR`.
 - Use the plugin's `Bottom label` field for labels rendered inside the key image. Stream Deck's built-in title field is not used by this plugin.
+- `Codex Tokens` shows the latest local Codex token count event:
+  - 5-hour rate-limit remaining percent
+  - weekly rate-limit remaining percent
+  - last turn token usage
+  - total session token usage from the latest token event
 
 The plugin reads local Codex state from:
 
@@ -80,12 +87,17 @@ This uses local files only. It does not call OpenAI or any external API.
 
    Pressing a Codex key opens the current session for that rank using Codex's `codex://threads/<session-id>` desktop deeplink. Cursor keys currently focus the Cursor app because Cursor session deeplinks are not exposed in the local state this plugin reads.
 
+4. Add the `Codex Tokens` action to any separate key if you want token/rate-limit status.
+
+   This action is intentionally separate from `Agent Session` and does not add token details to session keys.
+
 ## Local Checks
 
 ```sh
 npm run check
 npm run preview
 node com.local.codex-status.sdPlugin/bin/plugin.js --preview --provider cursor
+node com.local.codex-status.sdPlugin/bin/plugin.js --preview --tokens
 ```
 
 `npm run preview` prints the same session snapshot the plugin will use.
