@@ -12,7 +12,9 @@ Stream Deck plugin prototype that displays recent local Codex sessions on indivi
   - spinning icon: recent Codex log activity
   - filled icon: recently updated thread
   - outlined icon: no recent activity
-- The key shows only the status icon, project folder name, and thread title.
+- The first line shows the status icon and project folder name.
+- Idle/recent keys show the thread title plus the latest conversation text at the bottom.
+- Active keys omit the title and keep the latest conversation text updating in the main area.
 
 The plugin reads local Codex state from:
 

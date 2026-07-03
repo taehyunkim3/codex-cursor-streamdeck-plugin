@@ -17,6 +17,7 @@ const OPEN_COMMAND = "/usr/bin/open";
 
 const actions = new Map();
 const snapshotCache = new Map();
+const conversationCache = new Map();
 let websocket;
 let updateTimer;
 
@@ -92,6 +93,7 @@ function readSessionIndex(codexHome, showArchived) {
         recency_at_ms: updated,
         archived: showArchived ? 0 : 0,
         tokens_used: 0,
+        rollout_path: "",
         preview: ""
       }];
     } catch {
@@ -126,6 +128,7 @@ async function readSnapshot(settings = {}) {
               recency_at_ms,
               archived,
               tokens_used,
+              rollout_path,
               substr(replace(replace(preview, char(10), ' '), char(13), ' '), 1, 90) as preview
          from threads
         where ${where}
@@ -146,7 +149,7 @@ async function readSnapshot(settings = {}) {
   const logByThread = new Map(logRows.map((row) => [row.thread_id, Number(row.last_log_ms) || 0]));
   const sourceThreads = threads.length ? threads : readSessionIndex(codexHome, showArchived);
 
-  const snapshot = sourceThreads.map((thread) => {
+  const snapshot = await Promise.all(sourceThreads.map(async (thread) => {
     const dbActivityMs = Number(thread.recency_at_ms || thread.updated_at_ms) || 0;
     const lastLogMs = logByThread.get(thread.id) || 0;
     const dbAgeMs = now - dbActivityMs;
@@ -165,6 +168,7 @@ async function readSnapshot(settings = {}) {
       id: thread.id,
       title: truncateText(thread.title || thread.preview || "Untitled", 120),
       cwd: cleanText(thread.cwd || ""),
+      latestMessage: await readLatestConversationText(thread.rollout_path),
       updatedAtMs: dbActivityMs,
       lastLogMs,
       lastActivityMs,
@@ -173,7 +177,7 @@ async function readSnapshot(settings = {}) {
       archived: Number(thread.archived) === 1,
       tokensUsed: Number(thread.tokens_used) || 0
     };
-  });
+  }));
 
   snapshotCache.set(cacheKey, { createdAt: now, snapshot });
   return snapshot;
@@ -189,6 +193,116 @@ function truncateText(value, maxChars) {
     return chars.join("");
   }
   return `${chars.slice(0, Math.max(0, maxChars - 1)).join("")}…`;
+}
+
+function readTail(filePath, maxBytes = 180_000) {
+  try {
+    const stat = fs.statSync(filePath);
+    const cacheKey = `${filePath}:${stat.size}:${stat.mtimeMs}`;
+    const cached = conversationCache.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    for (const key of conversationCache.keys()) {
+      if (key.startsWith(`${filePath}:`)) {
+        conversationCache.delete(key);
+      }
+    }
+
+    const size = Math.min(stat.size, maxBytes);
+    const buffer = Buffer.alloc(size);
+    const fd = fs.openSync(filePath, "r");
+    try {
+      fs.readSync(fd, buffer, 0, size, stat.size - size);
+    } finally {
+      fs.closeSync(fd);
+    }
+
+    const text = buffer.toString("utf8");
+    conversationCache.set(cacheKey, text);
+    return text;
+  } catch {
+    return "";
+  }
+}
+
+function extractMessageContent(payload) {
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+
+  if (typeof payload.message === "string") {
+    return payload.message;
+  }
+
+  if (typeof payload.delta === "string") {
+    return payload.delta;
+  }
+
+  if (typeof payload.text === "string") {
+    return payload.text;
+  }
+
+  return "";
+}
+
+function normalizeConversationText(value) {
+  let text = cleanText(value
+    .replace(/<image\b[\s\S]*?<\/image>/gi, " ")
+    .replace(/::[a-z-]+\{[^}]*\}/g, " ")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1"));
+
+  const requestMarker = "## My request for Codex:";
+  const requestIndex = text.indexOf(requestMarker);
+  if (requestIndex >= 0) {
+    text = text.slice(requestIndex + requestMarker.length);
+  }
+
+  text = text
+    .replace(/^# Files mentioned by the user:\s*/i, "")
+    .replace(/## [^:]+:\s*/g, " ")
+    .replace(/<environment_context>[\s\S]*?<\/environment_context>/g, " ");
+
+  return truncateText(cleanText(text), 180);
+}
+
+function isInternalConversationText(value) {
+  const text = cleanText(value);
+  return /^\{[\s\S]*\}$/.test(text) || /^\[[\s\S]*\]$/.test(text);
+}
+
+function readLatestConversationText(rolloutPath) {
+  if (!rolloutPath) {
+    return "";
+  }
+
+  const lines = readTail(rolloutPath).split("\n").reverse();
+  for (const line of lines) {
+    if (!line.includes("\"type\":\"event_msg\"")) {
+      continue;
+    }
+    if (!line.includes("\"user_message\"") && !line.includes("\"agent_message\"")) {
+      continue;
+    }
+
+    try {
+      const event = JSON.parse(line);
+      const payload = event.payload || {};
+      if (!["user_message", "agent_message"].includes(payload.type)) {
+        continue;
+      }
+      const content = normalizeConversationText(extractMessageContent(payload));
+      if (content && !isInternalConversationText(content)) {
+        return content;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return "";
 }
 
 function contextSlot(context, entry) {
@@ -292,7 +406,10 @@ function fitLines(value, maxLines, maxUnits) {
     }
 
     const canBreakAtSpace = lastSpace > cursor && end < chars.length && displayUnits(chars.slice(cursor, lastSpace).join("")) >= maxUnits * 0.55;
-    const lineEnd = canBreakAtSpace ? lastSpace : end;
+    let lineEnd = canBreakAtSpace ? lastSpace : end;
+    if (!canBreakAtSpace && lineEnd < chars.length && /^[,.;:!?，。！？、)]$/.test(chars[lineEnd])) {
+      lineEnd += 1;
+    }
     const line = chars.slice(cursor, lineEnd).join("").trim();
     cursor = canBreakAtSpace ? lastSpace + 1 : lineEnd;
 
@@ -332,19 +449,31 @@ function renderStatusIcon(status, colors) {
 
 function renderThreadImage(thread) {
   const colors = statusColors(thread ? thread.status : "idle");
-  const project = fitLines(thread ? basename(thread.cwd) || "Codex" : "Codex", 1, 8.4)[0];
-  const titleLines = fitLines(thread ? thread.title : "No session", 4, 7.4);
+  const isActive = thread && thread.status === "active";
+  const project = fitLines(thread ? basename(thread.cwd) || "Codex" : "Codex", 1, 7.8)[0];
+  const latestMessage = thread && thread.latestMessage ? thread.latestMessage : "";
+  const titleLines = isActive ? [] : fitLines(thread ? thread.title : "No session", 2, 7.7);
+  const messageLines = fitLines(latestMessage || (isActive ? thread.title : ""), isActive ? 4 : 2, isActive ? 7.9 : 10.2);
   const statusIcon = renderStatusIcon(thread ? thread.status : "idle", colors);
 
   const titleSvg = titleLines.map((line, index) => (
-    `<text x="10" y="${53 + index * 21}" fill="${colors.text}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="19" font-weight="800">${escapeXml(line)}</text>`
+    `<text x="10" y="${56 + index * 22}" fill="${colors.text}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="20" font-weight="800">${escapeXml(line)}</text>`
+  )).join("");
+
+  const messageStartY = isActive ? 54 : 111;
+  const messageSize = isActive ? 18 : 12;
+  const messageWeight = isActive ? 800 : 700;
+  const messageFill = isActive ? colors.text : colors.muted;
+  const messageSvg = messageLines.map((line, index) => (
+    `<text x="10" y="${messageStartY + index * (isActive ? 20 : 15)}" fill="${messageFill}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="${messageSize}" font-weight="${messageWeight}">${escapeXml(line)}</text>`
   )).join("");
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
   <rect width="144" height="144" rx="18" fill="${colors.background}"/>
   ${statusIcon}
-  <text x="34" y="22" fill="${colors.muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="800">${escapeXml(project)}</text>
+  <text x="34" y="24" fill="${colors.muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15" font-weight="900">${escapeXml(project)}</text>
   ${titleSvg}
+  ${messageSvg}
 </svg>`;
 
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
@@ -494,6 +623,7 @@ async function preview() {
     slot: index + 1,
     status: statusLabel(thread.status),
     title: thread.title,
+    latestMessage: thread.latestMessage,
     cwd: thread.cwd,
     lastActivity: new Date(thread.lastActivityMs).toISOString(),
     age: formatAge(thread.ageMs)
