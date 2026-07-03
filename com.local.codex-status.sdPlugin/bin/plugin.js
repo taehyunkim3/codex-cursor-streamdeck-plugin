@@ -9,8 +9,10 @@ const { execFile } = require("node:child_process");
 const PLUGIN_UUID = "com.local.codex-status";
 const SESSION_ACTION_UUID = "com.local.codex-status.session";
 const TOKENS_ACTION_UUID = "com.local.codex-status.tokens";
+const CURSOR_REQUESTS_ACTION_UUID = "com.local.codex-status.cursor-requests";
 const UPDATE_MS = 700;
 const LOG_ACTIVE_MS = 75_000;
+const CURSOR_REQUEST_CACHE_MS = 30_000;
 const DEFAULT_RECENT_MINUTES = 10;
 const DEFAULT_DECK_COLUMNS = 3;
 const DEFAULT_VISIBLE_SLOTS = 6;
@@ -262,6 +264,35 @@ async function readTokenSnapshot(settings = {}) {
   return snapshot;
 }
 
+async function readCursorRequestSnapshot(settings = {}) {
+  const cursorDb = settings.cursorDbPath ? expandHome(settings.cursorDbPath) : defaultCursorDbPath();
+  const jsonPath = settings.cursorRequestsJsonPath ? expandHome(settings.cursorRequestsJsonPath) : "";
+  const cacheKey = `cursor-requests:${cursorDb}:${jsonPath}`;
+  const cached = snapshotCache.get(cacheKey);
+  const now = Date.now();
+
+  if (cached && now - cached.createdAt < CURSOR_REQUEST_CACHE_MS) {
+    return cached.snapshot;
+  }
+
+  const fromJson = readCursorRequestJson(jsonPath);
+  if (fromJson) {
+    snapshotCache.set(cacheKey, { createdAt: now, snapshot: fromJson });
+    return fromJson;
+  }
+
+  const rows = await sqliteJson(
+    cursorDb,
+    "select value from ItemTable where key='src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser'",
+    10000
+  );
+  const applicationUser = parseJsonValue(rows[0] && rows[0].value, {});
+  const snapshot = extractCursorRequestSnapshot(applicationUser);
+
+  snapshotCache.set(cacheKey, { createdAt: now, snapshot });
+  return snapshot;
+}
+
 async function readCursorSnapshot(settings = {}) {
   const cursorDb = settings.cursorDbPath ? expandHome(settings.cursorDbPath) : defaultCursorDbPath();
   const showArchived = Boolean(settings.showArchived);
@@ -509,6 +540,127 @@ function readLatestTokenCount(rolloutPath) {
   }
 
   return null;
+}
+
+function readCursorRequestJson(jsonPath) {
+  if (!jsonPath || !fs.existsSync(jsonPath)) {
+    return null;
+  }
+
+  const data = parseJsonValue(fs.readFileSync(jsonPath, "utf8"), null);
+  if (!data || typeof data !== "object") {
+    return null;
+  }
+
+  const requestRemaining = numberOrNull(data.requestRemaining ?? data.remainingRequests ?? data.remaining);
+  const requestLimit = numberOrNull(data.requestLimit ?? data.totalRequests ?? data.limit);
+  const requestUsed = numberOrNull(data.requestUsed ?? data.usedRequests ?? data.used);
+
+  return {
+    source: "json",
+    timestampMs: Number(data.timestampMs || Date.parse(data.updatedAt || "")) || Date.now(),
+    membershipType: cleanText(data.membershipType || data.plan || "Cursor"),
+    usagePricingEnabled: data.usagePricingEnabled === undefined ? null : Boolean(data.usagePricingEnabled),
+    usageHardLimit: Number(data.usageHardLimit) || 0,
+    requestRemaining,
+    requestLimit,
+    requestUsed,
+    resetAtMs: Number(data.resetAtMs || Date.parse(data.resetAt || "")) || 0,
+    hasRequestData: requestRemaining !== null || requestLimit !== null || requestUsed !== null
+  };
+}
+
+function extractCursorRequestSnapshot(applicationUser) {
+  const aiSettings = applicationUser && applicationUser.aiSettings && typeof applicationUser.aiSettings === "object"
+    ? applicationUser.aiSettings
+    : {};
+  const fields = flattenPrimitiveFields(applicationUser);
+  const requestRemaining = findNumberField(fields, [
+    /(?:remaining|left).*requests?/i,
+    /requests?.*(?:remaining|left)/i,
+    /fast.*requests?.*(?:remaining|left)/i,
+    /(?:remaining|left).*fast.*requests?/i,
+    /request.*allowance.*remaining/i
+  ]);
+  const requestLimit = findNumberField(fields, [
+    /(?:included|total|max|limit).*requests?/i,
+    /requests?.*(?:included|total|max|limit)/i,
+    /fast.*requests?.*(?:included|total|max|limit)/i,
+    /request.*allowance.*(?:total|limit)/i
+  ]);
+  const requestUsed = findNumberField(fields, [
+    /(?:used|consumed).*requests?/i,
+    /requests?.*(?:used|consumed)/i,
+    /fast.*requests?.*(?:used|consumed)/i
+  ]);
+  const resetAtMs = findTimeField(fields, [
+    /requests?.*(?:reset|renews?|refresh)/i,
+    /(?:reset|renews?|refresh).*requests?/i
+  ]);
+
+  return {
+    source: "cursor-local",
+    timestampMs: Date.now(),
+    membershipType: cleanText(applicationUser.membershipType || aiSettings.membershipType || "Cursor"),
+    usagePricingEnabled: aiSettings.isUsagePricingEnabled === undefined ? null : Boolean(aiSettings.isUsagePricingEnabled),
+    usageHardLimit: Number(aiSettings.usageHardLimit) || 0,
+    requestRemaining,
+    requestLimit,
+    requestUsed,
+    resetAtMs,
+    hasRequestData: requestRemaining !== null || requestLimit !== null || requestUsed !== null
+  };
+}
+
+function flattenPrimitiveFields(value, prefix = "", output = [], depth = 0) {
+  if (!value || typeof value !== "object" || depth > 8) {
+    return output;
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    if (/token|secret|credential|jwt|bearer|auth|session|email/i.test(key)) {
+      continue;
+    }
+
+    const pathName = prefix ? `${prefix}.${key}` : key;
+    if (child == null || ["number", "string", "boolean"].includes(typeof child)) {
+      output.push({ path: pathName, value: child });
+      continue;
+    }
+    if (Array.isArray(child)) {
+      child.slice(0, 20).forEach((entry, index) => flattenPrimitiveFields(entry, `${pathName}.${index}`, output, depth + 1));
+      continue;
+    }
+    flattenPrimitiveFields(child, pathName, output, depth + 1);
+  }
+
+  return output;
+}
+
+function findNumberField(fields, patterns) {
+  const match = fields.find((field) => (
+    patterns.some((pattern) => pattern.test(field.path)) &&
+    Number.isFinite(Number(field.value))
+  ));
+  return match ? Number(match.value) : null;
+}
+
+function findTimeField(fields, patterns) {
+  const match = fields.find((field) => patterns.some((pattern) => pattern.test(field.path)));
+  if (!match) {
+    return 0;
+  }
+  const number = Number(match.value);
+  if (Number.isFinite(number) && number > 0) {
+    return number > 10_000_000_000 ? number : number * 1000;
+  }
+  const parsed = Date.parse(String(match.value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function numberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function readTaskState(rolloutPath) {
@@ -1004,6 +1156,46 @@ function renderTokenImage(snapshot) {
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
 }
 
+function renderCursorRequestImage(snapshot) {
+  const hasData = Boolean(snapshot && snapshot.hasRequestData);
+  const remaining = hasData && snapshot.requestRemaining !== null ? formatCompactNumber(snapshot.requestRemaining) : "--";
+  const limit = hasData && snapshot.requestLimit !== null ? formatCompactNumber(snapshot.requestLimit) : "";
+  const used = hasData && snapshot.requestUsed !== null ? formatCompactNumber(snapshot.requestUsed) : "";
+  const membership = truncateText(snapshot && snapshot.membershipType ? snapshot.membershipType : "Cursor", 18);
+  const pricing = snapshot && snapshot.usagePricingEnabled === true
+    ? "usage pricing on"
+    : snapshot && snapshot.usagePricingEnabled === false
+      ? "usage pricing off"
+      : "pricing unknown";
+  const reset = snapshot && snapshot.resetAtMs ? `reset ${formatAge(snapshot.resetAtMs - Date.now())}` : "";
+  const detail = hasData
+    ? [
+      limit ? `/ ${limit}` : "",
+      used ? `used ${used}` : "",
+      reset
+    ].filter(Boolean).join(" ")
+    : "request counter unavailable";
+  const updated = snapshot && snapshot.timestampMs ? formatAge(Date.now() - snapshot.timestampMs) : "no data";
+  const accent = hasData ? "#f97316" : "#64748b";
+  const background = "#120b04";
+  const text = "#fff7ed";
+  const muted = "#fed7aa";
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
+  <rect width="144" height="144" rx="18" fill="${background}"/>
+  <circle cx="18" cy="18" r="7" fill="none" stroke="${accent}" stroke-width="3"/>
+  <text x="34" y="24" fill="${muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="900">Cursor</text>
+  <text x="10" y="51" fill="${text}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="20" font-weight="900">Requests</text>
+  <text x="10" y="82" fill="${text}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="28" font-weight="950">${escapeXml(remaining)}</text>
+  <text x="69" y="82" fill="${muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" font-weight="800">left</text>
+  <text x="10" y="105" fill="${muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="800">${escapeXml(truncateText(detail, 26))}</text>
+  <text x="10" y="122" fill="${muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="800">${escapeXml(truncateText(`${membership} · ${pricing}`, 27))}</text>
+  <text x="10" y="137" fill="${accent}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" font-weight="900">${escapeXml(updated)} ago</text>
+</svg>`;
+
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+}
+
 function send(message) {
   if (!websocket || websocket.readyState !== WebSocket.OPEN) {
     return;
@@ -1051,6 +1243,29 @@ async function updateAction(context, entry) {
   if (entry.action === TOKENS_ACTION_UUID) {
     const snapshot = await readTokenSnapshot(entry.settings);
     const image = renderTokenImage(snapshot);
+
+    send({
+      event: "setTitle",
+      context,
+      payload: {
+        title: "",
+        target: 0
+      }
+    });
+    send({
+      event: "setImage",
+      context,
+      payload: {
+        image,
+        target: 0
+      }
+    });
+    return;
+  }
+
+  if (entry.action === CURSOR_REQUESTS_ACTION_UUID) {
+    const snapshot = await readCursorRequestSnapshot(entry.settings);
+    const image = renderCursorRequestImage(snapshot);
 
     send({
       event: "setTitle",
@@ -1138,7 +1353,7 @@ function handleMessage(raw) {
 
   if (message.event === "keyDown" && actions.has(message.context)) {
     const entry = actions.get(message.context);
-    if (entry.action === TOKENS_ACTION_UUID) {
+    if (entry.action === TOKENS_ACTION_UUID || entry.action === CURSOR_REQUESTS_ACTION_UUID) {
       updateAction(message.context, entry).catch(() => {});
       return;
     }
@@ -1193,6 +1408,23 @@ async function preview() {
       secondaryReset: formatResetTime(secondary),
       lastTokens: snapshot.info && snapshot.info.last_token_usage ? snapshot.info.last_token_usage.total_tokens : 0,
       totalTokens: snapshot.info && snapshot.info.total_token_usage ? snapshot.info.total_token_usage.total_tokens : 0,
+      updatedAt: snapshot.timestampMs ? new Date(snapshot.timestampMs).toISOString() : null
+    }, null, 2));
+    return;
+  }
+
+  if (args.cursorRequests) {
+    const snapshot = await readCursorRequestSnapshot({});
+    console.log(JSON.stringify({
+      hasRequestData: snapshot.hasRequestData,
+      requestRemaining: snapshot.requestRemaining,
+      requestLimit: snapshot.requestLimit,
+      requestUsed: snapshot.requestUsed,
+      resetAt: snapshot.resetAtMs ? new Date(snapshot.resetAtMs).toISOString() : null,
+      membershipType: snapshot.membershipType,
+      usagePricingEnabled: snapshot.usagePricingEnabled,
+      usageHardLimit: snapshot.usageHardLimit,
+      source: snapshot.source,
       updatedAt: snapshot.timestampMs ? new Date(snapshot.timestampMs).toISOString() : null
     }, null, 2));
     return;

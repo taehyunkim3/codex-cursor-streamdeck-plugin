@@ -27,6 +27,19 @@
       "Tooltip": "Show Codex token and rate-limit remaining status.",
       "UUID": "com.local.codex-status.tokens",
       "UserTitleEnabled": false
+    },
+    {
+      "Icon": "imgs/action",
+      "Name": "Cursor Requests",
+      "States": [
+        {
+          "Image": "imgs/key-default",
+          "ShowTitle": false
+        }
+      ],
+      "Tooltip": "Show Cursor request remaining status when local Cursor state exposes it.",
+      "UUID": "com.local.codex-status.cursor-requests",
+      "UserTitleEnabled": false
     }
   ],
   "Author": "Local",

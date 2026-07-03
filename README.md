@@ -7,6 +7,7 @@ Stream Deck plugin prototype that displays recent local Codex and Cursor agent s
 - One Stream Deck action instance maps to one session rank for the selected provider.
 - `Agent Session` shows individual Codex or Cursor agent sessions.
 - `Codex Tokens` is a separate key action for Codex token/rate-limit status only.
+- `Cursor Requests` is a separate key action for Cursor request remaining status only.
 - Each key can use `Provider = Codex` or `Provider = Cursor Agent`.
 - Add as many keys as your Stream Deck model has, then choose the provider per key.
 - Provider split is not fixed. You can use any mix, such as all Codex, all Cursor, 3 + 3, 6 + 9, or one page per provider.
@@ -34,6 +35,13 @@ Stream Deck plugin prototype that displays recent local Codex and Cursor agent s
   - weekly rate-limit remaining percent
   - last turn token usage
   - total session token usage from the latest token event
+- `Cursor Requests` shows Cursor request counters when the local Cursor state exposes them:
+  - remaining request count
+  - request limit and used count, when present
+  - reset time, when present
+  - membership and usage-pricing state
+
+Current Cursor desktop local state may include membership and usage-pricing flags without exposing the actual request remaining number. In that case the key shows `-- left` and `request counter unavailable` instead of guessing.
 
 The plugin reads local Codex state from:
 
@@ -91,6 +99,23 @@ This uses local files only. It does not call OpenAI or any external API.
 
    This action is intentionally separate from `Agent Session` and does not add token details to session keys.
 
+5. Add the `Cursor Requests` action to any separate key if you want Cursor request status.
+
+   This action is intentionally separate from `Agent Session` and does not add request details to session keys. It reads local Cursor state only. If Cursor does not store the remaining request count locally, the key shows that the counter is unavailable.
+
+   For testing or a future external fetcher, the plugin can also read a JSON file path from Stream Deck settings named `cursorRequestsJsonPath`. The JSON shape can be:
+
+   ```json
+   {
+     "remainingRequests": 123,
+     "totalRequests": 500,
+     "usedRequests": 377,
+     "resetAt": "2026-07-04T00:00:00.000Z",
+     "plan": "pro",
+     "usagePricingEnabled": true
+   }
+   ```
+
 ## Local Checks
 
 ```sh
@@ -98,6 +123,7 @@ npm run check
 npm run preview
 node com.local.codex-status.sdPlugin/bin/plugin.js --preview --provider cursor
 node com.local.codex-status.sdPlugin/bin/plugin.js --preview --tokens
+node com.local.codex-status.sdPlugin/bin/plugin.js --preview --cursorRequests
 ```
 
 `npm run preview` prints the same session snapshot the plugin will use.
