@@ -7,6 +7,7 @@ Stream Deck plugin prototype that displays recent local Codex sessions on indivi
 - One Stream Deck action instance maps to one Codex session rank.
 - On Stream Deck Mini, place the action on all 6 keys to show the latest 6 sessions from top-left to bottom-right.
 - Session order is dynamic. When Codex activity changes, each key refreshes to the current session for that rank.
+- Press a key to open that ranked session in the Codex desktop app.
 - Each key renders a dynamic status image:
   - `진행중`: recent Codex log activity
   - `최근`: recently updated thread
@@ -44,6 +45,8 @@ This uses local files only. It does not call OpenAI or any external API.
    ```
 
    Each rank always points to the current latest session list, so a newly active session can move to `#1` and the other keys will shift on the next refresh. You can still override a key with `Session slot` in the property inspector if needed.
+
+   Pressing a key opens the current session for that rank using Codex's `codex://threads/<session-id>` desktop deeplink.
 
 ## Local Checks
 

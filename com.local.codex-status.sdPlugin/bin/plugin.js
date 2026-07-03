@@ -13,6 +13,7 @@ const DEFAULT_RECENT_MINUTES = 10;
 const DEFAULT_DECK_COLUMNS = 3;
 const DEFAULT_VISIBLE_SLOTS = 6;
 const MAX_THREADS = 50;
+const OPEN_COMMAND = "/usr/bin/open";
 
 const actions = new Map();
 const snapshotCache = new Map();
@@ -312,6 +313,31 @@ function send(message) {
   websocket.send(JSON.stringify(message));
 }
 
+function openThreadInCodex(thread) {
+  return new Promise((resolve, reject) => {
+    if (!thread || !thread.id) {
+      reject(new Error("No Codex session is available for this key."));
+      return;
+    }
+
+    const url = `codex://threads/${encodeURIComponent(thread.id)}`;
+    execFile(OPEN_COMMAND, ["-b", "com.openai.codex", url], { timeout: 5000 }, (bundleError) => {
+      if (!bundleError) {
+        resolve();
+        return;
+      }
+
+      execFile(OPEN_COMMAND, [url], { timeout: 5000 }, (urlError) => {
+        if (urlError) {
+          reject(urlError);
+          return;
+        }
+        resolve();
+      });
+    });
+  });
+}
+
 async function updateAction(context, entry) {
   const slot = contextSlot(context, entry);
   const snapshot = await readSnapshot(entry.settings);
@@ -378,10 +404,18 @@ function handleMessage(raw) {
   }
 
   if (message.event === "keyDown" && actions.has(message.context)) {
+    const entry = actions.get(message.context);
     snapshotCache.clear();
-    updateAction(message.context, actions.get(message.context)).then(() => {
+    readSnapshot(entry.settings).then((snapshot) => {
+      const slot = contextSlot(message.context, entry);
+      const thread = snapshot[slot - 1];
+      return openThreadInCodex(thread).then(() => updateAction(message.context, entry));
+    }).then(() => {
       send({ event: "showOk", context: message.context });
-    }).catch(() => {});
+    }).catch(() => {
+      send({ event: "showAlert", context: message.context });
+      updateAction(message.context, entry).catch(() => {});
+    });
   }
 }
 
