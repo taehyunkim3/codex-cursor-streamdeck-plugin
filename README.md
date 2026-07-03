@@ -6,7 +6,8 @@ Stream Deck plugin prototype that displays recent local Codex and Cursor agent s
 
 - One Stream Deck action instance maps to one session rank for the selected provider.
 - Each key can use `Provider = Codex` or `Provider = Cursor Agent`.
-- On Stream Deck Mini, place the action on all 6 keys and set the first 3 to Codex, the last 3 to Cursor if you want a split dashboard.
+- Add as many keys as your Stream Deck model has, then choose the provider per key.
+- Provider split is not fixed. You can use any mix, such as all Codex, all Cursor, 3 + 3, 6 + 9, or one page per provider.
 - Session order is dynamic within each provider. When activity changes, each key refreshes to the current session for that rank.
 - Press a Codex key to open that ranked session in the Codex desktop app. Press a Cursor key to focus Cursor.
 - Each key renders a dynamic status image:
@@ -51,25 +52,28 @@ This uses local files only. It does not call OpenAI or any external API.
 
 2. Restart Stream Deck.
 
-3. Add the `Agent Session` action to all 6 Stream Deck Mini keys.
+3. Add the `Agent Session` action to as many keys as you want to monitor.
 
-   The default layout uses 3 columns:
+   `Deck columns` controls how automatic rank mapping follows the physical layout. For example, Stream Deck Mini uses 3 columns:
 
    ```text
    #1 #2 #3
    #4 #5 #6
    ```
 
-   Each rank always points to the current latest session list, so a newly active session can move to `#1` and the other keys will shift on the next refresh. You can still override a key with `Session slot` in the property inspector if needed.
+   Larger models can use their own column count, or you can override every key with `Session slot`.
 
-   For a 3 + 3 split:
+   Each rank always points to the current latest session list for that key's provider, so a newly active Codex session can move to Codex slot `#1`, while Cursor slots are ranked separately.
+
+   Example splits:
 
    ```text
-   #1 Codex slot 1     #2 Codex slot 2     #3 Codex slot 3
-   #4 Cursor slot 1    #5 Cursor slot 2    #6 Cursor slot 3
+   Mini:       3 Codex + 3 Cursor
+   15-key:     9 Codex + 6 Cursor
+   XL/Page:   one page for Codex, one page for Cursor
    ```
 
-   Set the bottom row keys to `Provider = Cursor Agent` and manually set `Session slot` to `1`, `2`, and `3`.
+   For mixed-provider layouts, set each key's `Provider` and `Session slot` explicitly. Example: the first Cursor key should usually be `Provider = Cursor Agent` and `Session slot = 1`, regardless of where it sits physically.
 
    Pressing a Codex key opens the current session for that rank using Codex's `codex://threads/<session-id>` desktop deeplink. Cursor keys currently focus the Cursor app because Cursor session deeplinks are not exposed in the local state this plugin reads.
 
