@@ -171,7 +171,8 @@
 
   <script>
     let websocket;
-    let context;
+    let actionContext;
+    let propertyInspectorContext;
     let settings = {};
     let saveTimer;
 
@@ -196,13 +197,18 @@
 
     function connectElgatoStreamDeckSocket(port, propertyInspectorUuid, registerEvent, info, actionInfo) {
       const parsedActionInfo = JSON.parse(actionInfo);
-      context = parsedActionInfo.context;
+      propertyInspectorContext = propertyInspectorUuid;
+      actionContext = parsedActionInfo.context;
       settings = parsedActionInfo.payload.settings || {};
       render();
 
       websocket = new WebSocket(`ws://127.0.0.1:${port}`);
       websocket.addEventListener("open", () => {
         websocket.send(JSON.stringify({ event: registerEvent, uuid: propertyInspectorUuid }));
+        websocket.send(JSON.stringify({
+          event: "getSettings",
+          context: propertyInspectorContext
+        }));
       });
       websocket.addEventListener("message", (event) => {
         const message = JSON.parse(event.data);
@@ -256,11 +262,16 @@
     function save() {
       settings = nextSettings();
 
-      if (websocket && context) {
+      const settingsContext = propertyInspectorContext || actionContext;
+      if (websocket && settingsContext) {
         websocket.send(JSON.stringify({
           event: "setSettings",
-          context,
+          context: settingsContext,
           payload: settings
+        }));
+        websocket.send(JSON.stringify({
+          event: "getSettings",
+          context: settingsContext
         }));
         setStatus(`Saved ${new Date().toLocaleTimeString()}`);
       } else {
