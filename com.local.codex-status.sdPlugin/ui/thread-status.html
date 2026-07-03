@@ -77,6 +77,31 @@
     <input id="recentMinutes" type="number" min="1" max="240" step="1" placeholder="10">
   </label>
 
+  <label>
+    <span>Text scale (%)</span>
+    <input id="fontScale" type="number" min="60" max="160" step="5" placeholder="100">
+  </label>
+
+  <label>
+    <span>Project font size</span>
+    <input id="projectFontSize" type="number" min="8" max="28" step="1" placeholder="15">
+  </label>
+
+  <label>
+    <span>Title font size</span>
+    <input id="titleFontSize" type="number" min="8" max="32" step="1" placeholder="20">
+  </label>
+
+  <label>
+    <span>Active message font size</span>
+    <input id="activeMessageFontSize" type="number" min="8" max="32" step="1" placeholder="18">
+  </label>
+
+  <label>
+    <span>Bottom message font size</span>
+    <input id="footerMessageFontSize" type="number" min="7" max="24" step="1" placeholder="12">
+  </label>
+
   <label class="row">
     <input id="showArchived" type="checkbox">
     <span>Show archived sessions</span>
@@ -92,6 +117,11 @@
       deckColumns: document.getElementById("deckColumns"),
       codexHome: document.getElementById("codexHome"),
       recentMinutes: document.getElementById("recentMinutes"),
+      fontScale: document.getElementById("fontScale"),
+      projectFontSize: document.getElementById("projectFontSize"),
+      titleFontSize: document.getElementById("titleFontSize"),
+      activeMessageFontSize: document.getElementById("activeMessageFontSize"),
+      footerMessageFontSize: document.getElementById("footerMessageFontSize"),
       showArchived: document.getElementById("showArchived")
     };
 
@@ -119,6 +149,11 @@
       inputs.deckColumns.value = settings.deckColumns || "";
       inputs.codexHome.value = settings.codexHome || "";
       inputs.recentMinutes.value = settings.recentMinutes || "";
+      inputs.fontScale.value = settings.fontScale || "";
+      inputs.projectFontSize.value = settings.projectFontSize || "";
+      inputs.titleFontSize.value = settings.titleFontSize || "";
+      inputs.activeMessageFontSize.value = settings.activeMessageFontSize || "";
+      inputs.footerMessageFontSize.value = settings.footerMessageFontSize || "";
       inputs.showArchived.checked = Boolean(settings.showArchived);
     }
 
@@ -128,6 +163,11 @@
         deckColumns: Number(inputs.deckColumns.value) || undefined,
         codexHome: inputs.codexHome.value.trim() || undefined,
         recentMinutes: Number(inputs.recentMinutes.value) || undefined,
+        fontScale: Number(inputs.fontScale.value) || undefined,
+        projectFontSize: Number(inputs.projectFontSize.value) || undefined,
+        titleFontSize: Number(inputs.titleFontSize.value) || undefined,
+        activeMessageFontSize: Number(inputs.activeMessageFontSize.value) || undefined,
+        footerMessageFontSize: Number(inputs.footerMessageFontSize.value) || undefined,
         showArchived: inputs.showArchived.checked || undefined
       };
 

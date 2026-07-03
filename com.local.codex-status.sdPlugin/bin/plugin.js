@@ -12,6 +12,11 @@ const LOG_ACTIVE_MS = 75_000;
 const DEFAULT_RECENT_MINUTES = 10;
 const DEFAULT_DECK_COLUMNS = 3;
 const DEFAULT_VISIBLE_SLOTS = 6;
+const DEFAULT_FONT_SCALE = 100;
+const DEFAULT_PROJECT_FONT_SIZE = 15;
+const DEFAULT_TITLE_FONT_SIZE = 20;
+const DEFAULT_ACTIVE_MESSAGE_FONT_SIZE = 18;
+const DEFAULT_FOOTER_MESSAGE_FONT_SIZE = 12;
 const MAX_THREADS = 50;
 const OPEN_COMMAND = "/usr/bin/open";
 
@@ -94,6 +99,7 @@ function readSessionIndex(codexHome, showArchived) {
         archived: showArchived ? 0 : 0,
         tokens_used: 0,
         rollout_path: "",
+        thread_source: "",
         preview: ""
       }];
     } catch {
@@ -117,6 +123,7 @@ async function readSnapshot(settings = {}) {
   const stateDb = path.join(codexHome, "state_5.sqlite");
   const logsDb = path.join(codexHome, "logs_2.sqlite");
   const where = showArchived ? "archived in (0, 1)" : "archived = 0";
+  const visibleWhere = `${where} and coalesce(thread_source, '') != 'subagent'`;
 
   const [threads, logRows] = await Promise.all([
     sqliteJson(
@@ -131,7 +138,7 @@ async function readSnapshot(settings = {}) {
               rollout_path,
               substr(replace(replace(preview, char(10), ' '), char(13), ' '), 1, 90) as preview
          from threads
-        where ${where}
+        where ${visibleWhere}
         order by recency_at_ms desc
         limit ${MAX_THREADS}`
     ),
@@ -152,10 +159,15 @@ async function readSnapshot(settings = {}) {
   const snapshot = await Promise.all(sourceThreads.map(async (thread) => {
     const dbActivityMs = Number(thread.recency_at_ms || thread.updated_at_ms) || 0;
     const lastLogMs = logByThread.get(thread.id) || 0;
+    const taskState = readTaskState(thread.rollout_path);
     const dbAgeMs = now - dbActivityMs;
     const logAgeMs = now - lastLogMs;
     const hasFreshThread = dbAgeMs <= recentMinutes * 60_000;
-    const hasFreshLog = logAgeMs <= LOG_ACTIVE_MS && hasFreshThread;
+    const taskIsOpen = taskState.lastEvent === "task_started";
+    const hasOpenTaskState = Boolean(taskState.lastEvent);
+    const hasFreshLog = hasOpenTaskState
+      ? taskIsOpen
+      : logAgeMs <= LOG_ACTIVE_MS && hasFreshThread;
     const lastActivityMs = hasFreshLog ? Math.max(dbActivityMs, lastLogMs) : dbActivityMs;
     const ageMs = now - lastActivityMs;
     const status = hasFreshLog
@@ -169,6 +181,7 @@ async function readSnapshot(settings = {}) {
       title: truncateText(thread.title || thread.preview || "Untitled", 120),
       cwd: cleanText(thread.cwd || ""),
       latestMessage: await readLatestConversationText(thread.rollout_path),
+      taskOpen: taskIsOpen,
       updatedAtMs: dbActivityMs,
       lastLogMs,
       lastActivityMs,
@@ -181,6 +194,14 @@ async function readSnapshot(settings = {}) {
 
   snapshotCache.set(cacheKey, { createdAt: now, snapshot });
   return snapshot;
+}
+
+function clampNumber(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, number));
 }
 
 function cleanText(value) {
@@ -305,6 +326,53 @@ function readLatestConversationText(rolloutPath) {
   return "";
 }
 
+function readTaskState(rolloutPath) {
+  const state = {
+    lastEvent: "",
+    startedAtMs: 0,
+    completedAtMs: 0
+  };
+
+  if (!rolloutPath) {
+    return state;
+  }
+
+  const lines = readTail(rolloutPath).split("\n").reverse();
+  for (const line of lines) {
+    if (!line.includes("\"type\":\"event_msg\"")) {
+      continue;
+    }
+    if (!line.includes("\"task_started\"") && !line.includes("\"task_complete\"")) {
+      continue;
+    }
+
+    try {
+      const event = JSON.parse(line);
+      const payload = event.payload || {};
+      const timestampMs = Date.parse(event.timestamp || "") || 0;
+      if (payload.type === "task_started" && !state.startedAtMs) {
+        if (!state.lastEvent) {
+          state.lastEvent = "task_started";
+        }
+        state.startedAtMs = Number(payload.started_at) * 1000 || timestampMs;
+      }
+      if (payload.type === "task_complete" && !state.completedAtMs) {
+        if (!state.lastEvent) {
+          state.lastEvent = "task_complete";
+        }
+        state.completedAtMs = Number(payload.completed_at) * 1000 || timestampMs;
+      }
+      if (state.startedAtMs && state.completedAtMs) {
+        break;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return state;
+}
+
 function contextSlot(context, entry) {
   const explicit = Number(entry.settings.slot);
   if (Number.isInteger(explicit) && explicit > 0) {
@@ -423,6 +491,20 @@ function fitLines(value, maxLines, maxUnits) {
   return lines.length ? lines : [""];
 }
 
+function fontSettings(settings = {}) {
+  const scale = clampNumber(settings.fontScale, DEFAULT_FONT_SCALE, 60, 160) / 100;
+  return {
+    project: Math.round(clampNumber(settings.projectFontSize, DEFAULT_PROJECT_FONT_SIZE, 8, 28) * scale),
+    title: Math.round(clampNumber(settings.titleFontSize, DEFAULT_TITLE_FONT_SIZE, 8, 32) * scale),
+    activeMessage: Math.round(clampNumber(settings.activeMessageFontSize, DEFAULT_ACTIVE_MESSAGE_FONT_SIZE, 8, 32) * scale),
+    footerMessage: Math.round(clampNumber(settings.footerMessageFontSize, DEFAULT_FOOTER_MESSAGE_FONT_SIZE, 7, 24) * scale)
+  };
+}
+
+function fitUnits(baseUnits, baseSize, actualSize) {
+  return baseUnits * (baseSize / Math.max(1, actualSize));
+}
+
 function escapeXml(value) {
   return String(value)
     .replace(/&/g, "&amp;")
@@ -447,31 +529,41 @@ function renderStatusIcon(status, colors) {
   return `<circle cx="18" cy="18" r="7" fill="none" stroke="${colors.accent}" stroke-width="3"/>`;
 }
 
-function renderThreadImage(thread) {
+function renderThreadImage(thread, settings = {}) {
   const colors = statusColors(thread ? thread.status : "idle");
   const isActive = thread && thread.status === "active";
-  const project = fitLines(thread ? basename(thread.cwd) || "Codex" : "Codex", 1, 7.8)[0];
+  const fonts = fontSettings(settings);
+  const project = fitLines(thread ? basename(thread.cwd) || "Codex" : "Codex", 1, fitUnits(7.8, DEFAULT_PROJECT_FONT_SIZE, fonts.project))[0];
   const latestMessage = thread && thread.latestMessage ? thread.latestMessage : "";
-  const titleLines = isActive ? [] : fitLines(thread ? thread.title : "No session", 2, 7.7);
-  const messageLines = fitLines(latestMessage || (isActive ? thread.title : ""), isActive ? 4 : 2, isActive ? 7.9 : 10.2);
+  const titleLines = isActive ? [] : fitLines(thread ? thread.title : "No session", 2, fitUnits(7.7, DEFAULT_TITLE_FONT_SIZE, fonts.title));
+  const messageLines = fitLines(
+    latestMessage || (isActive ? thread.title : ""),
+    isActive ? 4 : 2,
+    isActive
+      ? fitUnits(7.9, DEFAULT_ACTIVE_MESSAGE_FONT_SIZE, fonts.activeMessage)
+      : fitUnits(10.2, DEFAULT_FOOTER_MESSAGE_FONT_SIZE, fonts.footerMessage)
+  );
   const statusIcon = renderStatusIcon(thread ? thread.status : "idle", colors);
+  const titleLineHeight = Math.round(fonts.title * 1.1);
+  const activeLineHeight = Math.round(fonts.activeMessage * 1.12);
+  const footerLineHeight = Math.round(fonts.footerMessage * 1.25);
 
   const titleSvg = titleLines.map((line, index) => (
-    `<text x="10" y="${56 + index * 22}" fill="${colors.text}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="20" font-weight="800">${escapeXml(line)}</text>`
+    `<text x="10" y="${56 + index * titleLineHeight}" fill="${colors.text}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="${fonts.title}" font-weight="800">${escapeXml(line)}</text>`
   )).join("");
 
   const messageStartY = isActive ? 54 : 111;
-  const messageSize = isActive ? 18 : 12;
+  const messageSize = isActive ? fonts.activeMessage : fonts.footerMessage;
   const messageWeight = isActive ? 800 : 700;
   const messageFill = isActive ? colors.text : colors.muted;
   const messageSvg = messageLines.map((line, index) => (
-    `<text x="10" y="${messageStartY + index * (isActive ? 20 : 15)}" fill="${messageFill}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="${messageSize}" font-weight="${messageWeight}">${escapeXml(line)}</text>`
+    `<text x="10" y="${messageStartY + index * (isActive ? activeLineHeight : footerLineHeight)}" fill="${messageFill}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="${messageSize}" font-weight="${messageWeight}">${escapeXml(line)}</text>`
   )).join("");
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
   <rect width="144" height="144" rx="18" fill="${colors.background}"/>
   ${statusIcon}
-  <text x="34" y="24" fill="${colors.muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15" font-weight="900">${escapeXml(project)}</text>
+  <text x="34" y="24" fill="${colors.muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="${fonts.project}" font-weight="900">${escapeXml(project)}</text>
   ${titleSvg}
   ${messageSvg}
 </svg>`;
@@ -515,7 +607,7 @@ async function updateAction(context, entry) {
   const slot = contextSlot(context, entry);
   const snapshot = await readSnapshot(entry.settings);
   const thread = snapshot[slot - 1];
-  const image = renderThreadImage(thread);
+  const image = renderThreadImage(thread, entry.settings);
 
   send({
     event: "setTitle",

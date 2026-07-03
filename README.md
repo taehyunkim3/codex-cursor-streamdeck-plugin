@@ -9,12 +9,20 @@ Stream Deck plugin prototype that displays recent local Codex sessions on indivi
 - Session order is dynamic. When Codex activity changes, each key refreshes to the current session for that rank.
 - Press a key to open that ranked session in the Codex desktop app.
 - Each key renders a dynamic status image:
-  - spinning icon: recent Codex log activity
+  - spinning icon: task is currently open
   - filled icon: recently updated thread
   - outlined icon: no recent activity
+- Subagent and internal approval sessions are hidden from the latest-session list.
+- Completed tasks stop showing the spinning in-progress state as soon as the session writes `task_complete`.
 - The first line shows the status icon and project folder name.
 - Idle/recent keys show the thread title plus the latest conversation text at the bottom.
 - Active keys omit the title and keep the latest conversation text updating in the main area.
+- Text sizes can be tuned per key in the property inspector:
+  - overall text scale
+  - project name
+  - title
+  - active conversation text
+  - bottom conversation text
 
 The plugin reads local Codex state from:
 
