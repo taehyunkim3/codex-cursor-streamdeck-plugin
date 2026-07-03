@@ -26,6 +26,7 @@ Stream Deck plugin prototype that displays recent local Codex and Cursor agent s
   - active conversation text
   - bottom conversation text
 - Optional bottom labels can be added per key, with a separate label font size. This is useful for labels like `CODEX` or `CURSOR`.
+- Use the plugin's `Bottom label` field for labels rendered inside the key image. Stream Deck's built-in title field is not used by this plugin.
 
 The plugin reads local Codex state from:
 
@@ -74,6 +75,8 @@ This uses local files only. It does not call OpenAI or any external API.
    ```
 
    For mixed-provider layouts, set each key's `Provider` and `Session slot` explicitly. Example: the first Cursor key should usually be `Provider = Cursor Agent` and `Session slot = 1`, regardless of where it sits physically.
+
+   Property Inspector changes autosave, and the `Save settings` button can be used to force-save the current values.
 
    Pressing a Codex key opens the current session for that rank using Codex's `codex://threads/<session-id>` desktop deeplink. Cursor keys currently focus the Cursor app because Cursor session deeplinks are not exposed in the local state this plugin reads.
 

@@ -55,6 +55,39 @@
     .row span {
       margin: 0;
     }
+
+    .actions {
+      position: sticky;
+      bottom: 0;
+      margin: 18px -16px -16px;
+      padding: 12px 16px 16px;
+      border-top: 1px solid #374151;
+      background: #202124;
+    }
+
+    button {
+      width: 100%;
+      border: 1px solid #60a5fa;
+      border-radius: 6px;
+      padding: 9px 12px;
+      color: #eff6ff;
+      background: #1d4ed8;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button:active {
+      background: #1e40af;
+    }
+
+    .status {
+      min-height: 18px;
+      margin: 8px 0 0;
+      color: #93c5fd;
+      font-size: 12px;
+      text-align: center;
+    }
   </style>
 </head>
 <body>
@@ -64,6 +97,16 @@
       <option value="codex">Codex</option>
       <option value="cursor">Cursor Agent</option>
     </select>
+  </label>
+
+  <label>
+    <span>Bottom label</span>
+    <input id="bottomLabel" type="text" placeholder="CODEX or CURSOR">
+  </label>
+
+  <label>
+    <span>Bottom label font size</span>
+    <input id="bottomLabelFontSize" type="number" min="7" max="24" step="1" placeholder="11">
   </label>
 
   <label>
@@ -116,25 +159,21 @@
     <input id="footerMessageFontSize" type="number" min="7" max="24" step="1" placeholder="12">
   </label>
 
-  <label>
-    <span>Bottom label</span>
-    <input id="bottomLabel" type="text" placeholder="CODEX or CURSOR">
-  </label>
-
-  <label>
-    <span>Bottom label font size</span>
-    <input id="bottomLabelFontSize" type="number" min="7" max="24" step="1" placeholder="11">
-  </label>
-
   <label class="row">
     <input id="showArchived" type="checkbox">
     <span>Show archived sessions</span>
   </label>
 
+  <div class="actions">
+    <button id="saveButton" type="button">Save settings</button>
+    <div id="saveStatus" class="status">Changes autosave, or press Save.</div>
+  </div>
+
   <script>
     let websocket;
     let context;
     let settings = {};
+    let saveTimer;
 
     const inputs = {
       provider: document.getElementById("provider"),
@@ -152,6 +191,8 @@
       bottomLabelFontSize: document.getElementById("bottomLabelFontSize"),
       showArchived: document.getElementById("showArchived")
     };
+    const saveButton = document.getElementById("saveButton");
+    const saveStatus = document.getElementById("saveStatus");
 
     function connectElgatoStreamDeckSocket(port, propertyInspectorUuid, registerEvent, info, actionInfo) {
       const parsedActionInfo = JSON.parse(actionInfo);
@@ -189,8 +230,12 @@
       inputs.showArchived.checked = Boolean(settings.showArchived);
     }
 
-    function save() {
-      settings = {
+    function setStatus(text) {
+      saveStatus.textContent = text;
+    }
+
+    function nextSettings() {
+      return {
         provider: inputs.provider.value === "cursor" ? "cursor" : "codex",
         slot: Number(inputs.slot.value) || undefined,
         deckColumns: Number(inputs.deckColumns.value) || undefined,
@@ -206,6 +251,10 @@
         bottomLabelFontSize: Number(inputs.bottomLabelFontSize.value) || undefined,
         showArchived: inputs.showArchived.checked || undefined
       };
+    }
+
+    function save() {
+      settings = nextSettings();
 
       if (websocket && context) {
         websocket.send(JSON.stringify({
@@ -213,13 +262,23 @@
           context,
           payload: settings
         }));
+        setStatus(`Saved ${new Date().toLocaleTimeString()}`);
+      } else {
+        setStatus("Waiting for Stream Deck connection.");
       }
     }
 
+    function scheduleSave() {
+      setStatus("Saving...");
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(save, 250);
+    }
+
     Object.values(inputs).forEach((input) => {
+      input.addEventListener("input", scheduleSave);
       input.addEventListener("change", save);
-      input.addEventListener("keyup", save);
     });
+    saveButton.addEventListener("click", save);
   </script>
 </body>
 </html>
