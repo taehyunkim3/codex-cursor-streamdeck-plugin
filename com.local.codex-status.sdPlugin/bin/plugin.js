@@ -7,7 +7,7 @@ const path = require("node:path");
 const { execFile } = require("node:child_process");
 
 const PLUGIN_UUID = "com.local.codex-status";
-const UPDATE_MS = 2500;
+const UPDATE_MS = 700;
 const LOG_ACTIVE_MS = 75_000;
 const DEFAULT_RECENT_MINUTES = 10;
 const DEFAULT_DECK_COLUMNS = 3;
@@ -222,12 +222,12 @@ function statusLabel(status) {
 
 function statusColors(status) {
   if (status === "active") {
-    return { background: "#071b16", accent: "#10b981", muted: "#a7f3d0", text: "#f8fafc" };
+    return { background: "#071712", accent: "#10b981", muted: "#a7f3d0", text: "#f8fafc" };
   }
   if (status === "recent") {
-    return { background: "#1c1917", accent: "#f59e0b", muted: "#fed7aa", text: "#fff7ed" };
+    return { background: "#17120a", accent: "#f59e0b", muted: "#fed7aa", text: "#fff7ed" };
   }
-  return { background: "#111827", accent: "#64748b", muted: "#cbd5e1", text: "#f8fafc" };
+  return { background: "#0f172a", accent: "#64748b", muted: "#cbd5e1", text: "#f8fafc" };
 }
 
 function formatAge(ageMs) {
@@ -256,14 +256,52 @@ function basename(value) {
   return path.basename(value);
 }
 
-function fitLines(value, maxLines, maxChars) {
+function displayUnits(value) {
+  return [...value].reduce((total, char) => {
+    if (char === " ") {
+      return total + 0.35;
+    }
+    return total + (char.charCodeAt(0) <= 0x7f ? 0.58 : 1);
+  }, 0);
+}
+
+function fitLines(value, maxLines, maxUnits) {
   const chars = [...cleanText(value)];
   const lines = [];
   let cursor = 0;
   while (cursor < chars.length && lines.length < maxLines) {
-    const slice = chars.slice(cursor, cursor + maxChars).join("");
-    cursor += maxChars;
-    lines.push(cursor < chars.length && lines.length === maxLines - 1 ? `${slice.slice(0, Math.max(0, maxChars - 1))}…` : slice);
+    let units = 0;
+    let end = cursor;
+    let lastSpace = -1;
+
+    while (end < chars.length) {
+      const char = chars[end];
+      const nextUnits = units + displayUnits(char);
+      if (nextUnits > maxUnits) {
+        break;
+      }
+      units = nextUnits;
+      if (char === " ") {
+        lastSpace = end;
+      }
+      end += 1;
+    }
+
+    if (end === cursor) {
+      end += 1;
+    }
+
+    const canBreakAtSpace = lastSpace > cursor && end < chars.length && displayUnits(chars.slice(cursor, lastSpace).join("")) >= maxUnits * 0.55;
+    const lineEnd = canBreakAtSpace ? lastSpace : end;
+    const line = chars.slice(cursor, lineEnd).join("").trim();
+    cursor = canBreakAtSpace ? lastSpace + 1 : lineEnd;
+
+    if (cursor < chars.length && lines.length === maxLines - 1) {
+      lines.push(`${line.replace(/…$/, "").slice(0, Math.max(0, line.length - 1))}…`);
+      break;
+    }
+
+    lines.push(line);
   }
   return lines.length ? lines : [""];
 }
@@ -276,31 +314,37 @@ function escapeXml(value) {
     .replace(/"/g, "&quot;");
 }
 
-function renderThreadImage(thread, slot, total) {
+function renderStatusIcon(status, colors) {
+  if (status === "active") {
+    const rotation = Math.floor((Date.now() / UPDATE_MS) % 8) * 45;
+    return `<g transform="rotate(${rotation} 18 18)">
+      <circle cx="18" cy="18" r="8" fill="none" stroke="${colors.accent}" stroke-width="4" opacity="0.22"/>
+      <path d="M18 10a8 8 0 0 1 8 8" fill="none" stroke="${colors.accent}" stroke-width="4" stroke-linecap="round"/>
+    </g>`;
+  }
+
+  if (status === "recent") {
+    return `<circle cx="18" cy="18" r="7" fill="${colors.accent}"/>`;
+  }
+
+  return `<circle cx="18" cy="18" r="7" fill="none" stroke="${colors.accent}" stroke-width="3"/>`;
+}
+
+function renderThreadImage(thread) {
   const colors = statusColors(thread ? thread.status : "idle");
-  const label = thread ? statusLabel(thread.status) : "대기";
-  const titleLines = fitLines(thread ? thread.title : "No session", 3, 9);
-  const workspace = thread ? basename(thread.cwd) : "";
-  const footer = thread ? `${formatAge(thread.ageMs)} ago` : `slot ${slot}`;
-  const tokenText = `#${slot}`;
+  const project = fitLines(thread ? basename(thread.cwd) || "Codex" : "Codex", 1, 8.4)[0];
+  const titleLines = fitLines(thread ? thread.title : "No session", 4, 7.4);
+  const statusIcon = renderStatusIcon(thread ? thread.status : "idle", colors);
 
   const titleSvg = titleLines.map((line, index) => (
-    `<text x="12" y="${58 + index * 19}" fill="${colors.text}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17" font-weight="700">${escapeXml(line)}</text>`
+    `<text x="10" y="${53 + index * 21}" fill="${colors.text}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="19" font-weight="800">${escapeXml(line)}</text>`
   )).join("");
-
-  const workspaceText = workspace
-    ? `<text x="12" y="120" fill="${colors.muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12">${escapeXml(fitLines(workspace, 1, 14)[0])}</text>`
-    : "";
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
   <rect width="144" height="144" rx="18" fill="${colors.background}"/>
-  <rect x="8" y="8" width="128" height="128" rx="14" fill="none" stroke="${colors.accent}" stroke-width="3" opacity="0.9"/>
-  <circle cx="22" cy="25" r="6" fill="${colors.accent}"/>
-  <text x="35" y="30" fill="${colors.muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15" font-weight="700">${escapeXml(label)}</text>
-  <text x="128" y="30" fill="${colors.muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" text-anchor="end">${escapeXml(tokenText)}</text>
+  ${statusIcon}
+  <text x="34" y="22" fill="${colors.muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="800">${escapeXml(project)}</text>
   ${titleSvg}
-  ${workspaceText}
-  <text x="132" y="132" fill="${colors.muted}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" text-anchor="end">${escapeXml(footer)}</text>
 </svg>`;
 
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
@@ -342,7 +386,7 @@ async function updateAction(context, entry) {
   const slot = contextSlot(context, entry);
   const snapshot = await readSnapshot(entry.settings);
   const thread = snapshot[slot - 1];
-  const image = renderThreadImage(thread, slot, snapshot.length);
+  const image = renderThreadImage(thread);
 
   send({
     event: "setTitle",

@@ -9,10 +9,10 @@ Stream Deck plugin prototype that displays recent local Codex sessions on indivi
 - Session order is dynamic. When Codex activity changes, each key refreshes to the current session for that rank.
 - Press a key to open that ranked session in the Codex desktop app.
 - Each key renders a dynamic status image:
-  - `진행중`: recent Codex log activity
-  - `최근`: recently updated thread
-  - `대기`: no recent activity
-- The key also shows the thread title, workspace folder, last activity age, and slot number.
+  - spinning icon: recent Codex log activity
+  - filled icon: recently updated thread
+  - outlined icon: no recent activity
+- The key shows only the status icon, project folder name, and thread title.
 
 The plugin reads local Codex state from:
 
