@@ -1,0 +1,149 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Codex Session Settings</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #f3f4f6;
+      background: #202124;
+    }
+
+    body {
+      margin: 0;
+      padding: 16px;
+      font-size: 13px;
+    }
+
+    label {
+      display: block;
+      margin: 0 0 14px;
+    }
+
+    span {
+      display: block;
+      margin-bottom: 6px;
+      color: #cbd5e1;
+    }
+
+    input {
+      box-sizing: border-box;
+      width: 100%;
+      border: 1px solid #4b5563;
+      border-radius: 6px;
+      padding: 8px 10px;
+      color: #f9fafb;
+      background: #111827;
+      font: inherit;
+    }
+
+    input[type="checkbox"] {
+      width: auto;
+      margin-right: 8px;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 4px 0 14px;
+    }
+
+    .row span {
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+  <label>
+    <span>Session slot</span>
+    <input id="slot" type="number" min="1" max="99" step="1" placeholder="1">
+  </label>
+
+  <label>
+    <span>Deck columns</span>
+    <input id="deckColumns" type="number" min="1" max="8" step="1" placeholder="3">
+  </label>
+
+  <label>
+    <span>Codex home</span>
+    <input id="codexHome" type="text" placeholder="~/.codex">
+  </label>
+
+  <label>
+    <span>Recent window minutes</span>
+    <input id="recentMinutes" type="number" min="1" max="240" step="1" placeholder="10">
+  </label>
+
+  <label class="row">
+    <input id="showArchived" type="checkbox">
+    <span>Show archived sessions</span>
+  </label>
+
+  <script>
+    let websocket;
+    let context;
+    let settings = {};
+
+    const inputs = {
+      slot: document.getElementById("slot"),
+      deckColumns: document.getElementById("deckColumns"),
+      codexHome: document.getElementById("codexHome"),
+      recentMinutes: document.getElementById("recentMinutes"),
+      showArchived: document.getElementById("showArchived")
+    };
+
+    function connectElgatoStreamDeckSocket(port, propertyInspectorUuid, registerEvent, info, actionInfo) {
+      const parsedActionInfo = JSON.parse(actionInfo);
+      context = parsedActionInfo.context;
+      settings = parsedActionInfo.payload.settings || {};
+      render();
+
+      websocket = new WebSocket(`ws://127.0.0.1:${port}`);
+      websocket.addEventListener("open", () => {
+        websocket.send(JSON.stringify({ event: registerEvent, uuid: propertyInspectorUuid }));
+      });
+      websocket.addEventListener("message", (event) => {
+        const message = JSON.parse(event.data);
+        if (message.event === "didReceiveSettings") {
+          settings = message.payload.settings || {};
+          render();
+        }
+      });
+    }
+
+    function render() {
+      inputs.slot.value = settings.slot || "";
+      inputs.deckColumns.value = settings.deckColumns || "";
+      inputs.codexHome.value = settings.codexHome || "";
+      inputs.recentMinutes.value = settings.recentMinutes || "";
+      inputs.showArchived.checked = Boolean(settings.showArchived);
+    }
+
+    function save() {
+      settings = {
+        slot: Number(inputs.slot.value) || undefined,
+        deckColumns: Number(inputs.deckColumns.value) || undefined,
+        codexHome: inputs.codexHome.value.trim() || undefined,
+        recentMinutes: Number(inputs.recentMinutes.value) || undefined,
+        showArchived: inputs.showArchived.checked || undefined
+      };
+
+      if (websocket && context) {
+        websocket.send(JSON.stringify({
+          event: "setSettings",
+          context,
+          payload: settings
+        }));
+      }
+    }
+
+    Object.values(inputs).forEach((input) => {
+      input.addEventListener("change", save);
+      input.addEventListener("keyup", save);
+    });
+  </script>
+</body>
+</html>
